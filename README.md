@@ -1,6 +1,6 @@
 # winapp-udp-unlock
 
-**Force Microsoft "Windows App" on macOS to use MS-RDPEUDP for direct RDP — not just AVD / Cloud PC.**
+Force Microsoft's "Windows App" on macOS to use MS-RDPEUDP for direct RDP, not just for Azure Virtual Desktop and Cloud PC.
 
 Windows App already contains a full UDP multi-transport implementation. It's gated at runtime to activate only for Azure Virtual Desktop and Cloud PC sessions. For direct RDP to your own Windows hosts, the client silently falls back to TCP, which on long-RTT paths gets crushed by the TCP BDP window ceiling.
 
@@ -73,9 +73,7 @@ Your patch gets overwritten. Re-run `./auto-patch.sh`. If it fails (pattern matc
 
 - **EULA.** Patching Microsoft's signed binary isn't blessed by Microsoft. Use on machines you own.
 - **Signature.** `auto-patch.sh` ad-hoc re-signs the bundle. Gatekeeper still launches it, but the signature is no longer notarized. Library-validation-enforcing entitlements may reject it (none observed so far).
-- **Connection Information panel lies post-patch.** It sometimes keeps showing `TCP` even when the data plane is entirely UDP. Trust `tcpdump`, not the panel.
-- **Bufferbloat is orthogonal.** If your uplink has no SQM, you'll still feel jitter. UDP helps enormously, but consider CAKE/fq_codel on your router for the last-mile win.
 
 ## License
 
-Unlicense / public domain. No warranty. If it bricks your /Applications, restore from `revert.sh` or reinstall from Microsoft.
+Unlicense / public domain. No warranty. If it bricks your /Applications, restore from `revert.sh` or reinstall from the App Store.

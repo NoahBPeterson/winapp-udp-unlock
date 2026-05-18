@@ -11,10 +11,10 @@ This repo removes the gate with a single 4-byte NOP.
 | | Before | After |
 |---|---|---|
 | Transport | TCP | UDP (Private) |
-| Available Bandwidth | **807 Kbps** | **46.55 Mbps** |
+| Available Bandwidth | **807 Kbps** | **93.12 Mbps** |
 | Measured RTT | 195 ms | 151 ms |
 
-~57× effective throughput, same network, same host.
+~115× effective throughput, same network, same host.
 
 ## The gate
 

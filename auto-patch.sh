@@ -39,6 +39,7 @@ FN_LINE=$(grep -n 'RDCConnectionSettings.*asConnectionSettingsEx\]:' "$DISASM" |
 # Walk forward through function body, collect every cbz w0 that follows a bl to IsWvdConnection.
 # Cap search at 500 lines (function is ~300 lines of asm).
 BL_IDX=0
+NR=0
 declare -a CBZ_VAS
 while IFS= read -r line; do
     NR=$((NR + 1))
@@ -70,7 +71,8 @@ echo "Target VA (UDP gate): $TARGET_VA"
 
 # Compute fat file offset
 ARM64_OFF=$(lipo -detailed_info "$BIN" | awk '$1=="architecture" && $2=="arm64" {f=1} f && $1=="offset" {print $2; exit}')
-VA_DEC=$((TARGET_VA))
+VA_HEX="${TARGET_VA#0x}"
+VA_DEC=$((16#$VA_HEX))
 SLICE_BASE=$((16#100000000))
 FAT_OFF=$((ARM64_OFF + VA_DEC - SLICE_BASE))
 echo "Fat file offset: $FAT_OFF ($(printf '0x%X' $FAT_OFF))"

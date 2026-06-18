@@ -6,6 +6,8 @@ Windows App already contains a full UDP multi-transport implementation. It's gat
 
 This repo removes the gate with a single 4-byte NOP.
 
+> **Confirmed working on Windows App 11.3.5 and 11.3.6.** The pattern-based locator in `auto-patch.sh` re-patched 11.3.6 with no script changes after Microsoft's update.
+
 ## Before / after on a 151 ms RTT path
 
 | | Before | After |

@@ -23,12 +23,29 @@ sudo rm -rf "$APP"
 echo "==> Restoring original from $BAK..."
 sudo ditto "$BAK" "$APP"
 
-echo "==> Verifying original at VA 0x100b484e4 via otool..."
-INSTR=$(otool -arch arm64 -tV "$BIN" 2>/dev/null | awk '/^0000000100b484e4/ {print $2}')
-if [ "$INSTR" = "cbz" ]; then
-    echo "OK: original cbz restored at 0x100b484e4"
-else
-    echo "WARN: expected cbz, got '$INSTR'. .bak may not be pristine." >&2
-fi
+# Version/arch-independent verification: the original binary still *branches* at the
+# second IsWvdConnection gate (cbz on arm64, je on x86_64). auto-patch.sh replaces that
+# branch with a NOP, so a restored, pristine binary must show a real branch again.
+echo "==> Verifying the UDP gate is a real branch again on every slice..."
+FAIL=0
+for ARCH in $(lipo -archs "$BIN" 2>/dev/null || echo arm64); do
+    # `|| true`: the awk `exit` closes otool's pipe early; under `set -o pipefail`
+    # otool's SIGPIPE would otherwise abort the script here.
+    MN=$(otool -arch "$ARCH" -tV "$BIN" 2>/dev/null | awk '
+        /asConnectionSettingsEx\]:/ {infn=1}
+        infn && /IsWvdConnectionEv/ && ($2=="bl"||$2=="callq") {n++; win=(n==2?4:0); next}
+        infn && n==2 && win>0 { if ($2=="cbz"||$2=="je"||$2=="nop"){print $2; exit} else win-- }
+    ') || true
+    if [ "$MN" = "cbz" ] || [ "$MN" = "je" ]; then
+        echo "OK [$ARCH]: original branch ($MN) restored at the UDP gate."
+    else
+        echo "WARN [$ARCH]: expected cbz/je at the UDP gate, got '${MN:-none}'. .bak may not be pristine." >&2
+        FAIL=1
+    fi
+done
 
-echo "Done. Launch Windows App — it is now unpatched, Microsoft-signed."
+if [ "$FAIL" = 0 ]; then
+    echo "Done. Launch Windows App — it is now unpatched, Microsoft-signed."
+else
+    echo "Done, but verification was inconclusive — check the backup." >&2
+fi

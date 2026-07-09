@@ -84,6 +84,21 @@ sudo dd if="$FAT_BIN" bs=1 skip=$FAT_OFF count=4 2>/dev/null | xxd -p
 printf '\x1f\x20\x03\xd5' | sudo dd of="$FAT_BIN" bs=1 seek=$FAT_OFF count=4 conv=notrunc
 ```
 
+**x86_64 (Intel) slice.** The structure is identical, but Branch B is an x86 conditional
+jump, not `cbz`: after `callq IsWvdConnection` you'll see `testb %al, %al` then
+`je <skip>`. That `je` is either a 2-byte short jump (`74 xx`) or a 6-byte near jump
+(`0F 84 xx xx xx xx`) — in current builds it's the 6-byte form. Verify the current bytes
+start with `74` or `0f84`, then NOP-fill the *whole* instruction with `0x90`:
+
+```bash
+LEN=6   # 2 for a short je (74), 6 for a near je (0F 84); check with dd/xxd first
+python3 -c "import sys; sys.stdout.buffer.write(b'\x90'*$LEN)" \
+  | sudo dd of="$FAT_BIN" bs=1 seek=$FAT_OFF count=$LEN conv=notrunc
+```
+
+Use `arch -x86_64 "/Applications/Windows App.app/Contents/MacOS/Windows App"` to run the
+x86_64 slice under Rosetta on an Apple Silicon Mac when validating this branch.
+
 ### Step 6 — Re-sign and verify
 
 ```bash

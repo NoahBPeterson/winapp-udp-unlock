@@ -6,7 +6,7 @@ Windows App already contains a full UDP multi-transport implementation. It's gat
 
 This repo removes the gate by NOPing one conditional branch per architecture slice (a 4-byte `cbz` on arm64, a 6-byte `je` on x86_64).
 
-> **Confirmed working on Windows App 11.3.5, 11.3.6, and 11.3.7.** The pattern-based locator in `auto-patch.sh` re-patched each Microsoft update with no script changes.
+> **Confirmed working on Windows App 11.3.5, 11.3.6, 11.3.7, and 11.3.9.** The pattern-based locator in `auto-patch.sh` re-patched each Microsoft update with no script changes.
 >
 > **Apple Silicon and Intel.** Windows App is a universal binary; `auto-patch.sh` patches every slice present (arm64 and x86_64), so the fix works on both. The x86_64 patch was verified by running the patched slice under Rosetta 2 on Apple Silicon.
 

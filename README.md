@@ -48,6 +48,7 @@ Also verify UDP 3389 inbound is allowed in the firewall.
 **2. Mac, one-time:**
 ```bash
 defaults write com.microsoft.rdc.macos ClientSettings.EnableAvdUdpSideTransport -bool true
+defaults write ~/Library/Preferences/com.microsoft.rdc.macos ClientSettings.EnableAvdUdpSideTransport -bool true
 ```
 Grant your terminal **App Management** permission: System Settings → Privacy & Security → App Management → enable Terminal / iTerm2 / Ghostty / ...
 

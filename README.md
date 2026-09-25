@@ -6,9 +6,11 @@ Windows App already contains a full UDP multi-transport implementation. It's gat
 
 This repo removes the gate by NOPing one conditional branch per architecture slice (a 4-byte `cbz` on arm64, a 6-byte `je` on x86_64).
 
-> **Confirmed working on Windows App 11.3.5, 11.3.6, 11.3.7, 11.3.9, and 11.4.0.** The pattern-based locator in `auto-patch.sh` re-patched each Microsoft update with no script changes.
+> **Confirmed working on Windows App 11.3.5, 11.3.6, 11.3.7, 11.3.9, and 11.4.0** with `auto-patch.sh` alone. The pattern-based locator re-patched each Microsoft update with no script changes.
 >
-> **Apple Silicon and Intel.** Windows App is a universal binary; `auto-patch.sh` patches every slice present (arm64 and x86_64), so the fix works on both. The x86_64 patch was verified by running the patched slice under Rosetta 2 on Apple Silicon.
+> **11.4.2 (build 3104) also needs `deep-patch.sh`.** Microsoft rewrote the UDP engine (RdpNano); the gate NOP is now necessary but no longer sufficient. See [11.4.2: the RdpNano side transport](#1142-the-rdpnano-side-transport).
+>
+> **Apple Silicon and Intel.** Windows App is a universal binary; both scripts patch every slice present (arm64 and x86_64), so the fix works on both. The x86_64 patches were verified by running the patched slice under Rosetta 2 on Apple Silicon.
 
 ## Before / after on a 151 ms RTT path
 
@@ -33,6 +35,14 @@ if (self->_enableAvdUdpSideTransport == 1 && IsWvdConnection()) {
 
 The patch NOPs the conditional branch after the `IsWvdConnection()` call — `cbz w0, <skip>` on arm64, `je <skip>` (a 6-byte `0F 84` near jump) on x86_64. The user-preference arm (the `_enableAvdUdpSideTransport == 1` check, which is its own branch just before) is left intact — the feature still only activates when the user opts in.
 
+## 11.4.2: the RdpNano side transport
+
+11.4.2 (build 3104) replaced the UDP engine with a new `Microsoft::RdpNano::RdpSideTransport`. `TsUdpTransport::Connect` now refuses to start unless a `SideTransportCreationParams` object is present on the connection property set — and only the Azure gateway orchestration path ever creates one. So the gate NOP still fires and the client requests UDP, but `Connect` aborts with `0x8000ffff` (`Invalid spUnknownCreationParams`) and the session falls back to TCP.
+
+`deep-patch.sh` closes the gap. It hooks `TsUdpTransport::Connect` with a code-cave stub that fabricates the missing object and publishes it onto the connection property set — via the property set's own virtual `SetIUnknownProperty`, right after `Connect` resolves the property set. The object's fields are left empty; RdpNano reads the server address from the property set, and direct RDP negotiates `UDP (Private)` as before.
+
+Run it after `auto-patch.sh`. It patches both slices, re-signs ad-hoc, and is idempotent — re-running refreshes the stub and self-heals an earlier hook.
+
 ## Quick start
 
 **1. Windows host** (PowerShell as admin, once):
@@ -55,6 +65,7 @@ Grant your terminal **App Management** permission: System Settings → Privacy &
 ```bash
 ./auto-patch.sh
 ```
+On **11.4.2 and later**, also run `./deep-patch.sh` afterward (it needs the gate NOP in place). See [11.4.2: the RdpNano side transport](#1142-the-rdpnano-side-transport).
 
 **4. Relaunch Windows App and reconnect.** Connection Information → Transport Protocol should read `UDP (Private)`.
 
@@ -65,6 +76,7 @@ Verify with `sudo tcpdump -ni any "udp and host <server-ip> and port 3389"` — 
 | File | Purpose |
 |---|---|
 | `auto-patch.sh` | Patches the installed Windows App — every arch slice present (arm64 + x86_64). Backs up to `/Applications/Windows App.app.bak` first, and refreshes that backup if it's from an older app version (so revert can't downgrade you). Locates the gate by instruction pattern, not hardcoded offset — survives minor recompiles. |
+| `deep-patch.sh` | **11.4.2+ only.** Run after `auto-patch.sh`. Injects the fabricated `SideTransportCreationParams` object that 11.4.2's RdpNano engine requires (see [above](#1142-the-rdpnano-side-transport)). Both slices; re-signs ad-hoc; idempotent and self-healing across re-runs. Offsets are hardcoded to build 3104. |
 | `revert.sh` | Restores the `.bak` whole-bundle backup and verifies the original branch is back on every slice (version/arch-independent). |
 | `find-udp-gate.py` | Ghidra post-script. Locates the gate using only the invariant string `"EnableUdpSideTransport"` — does not depend on mangled C++ symbols or branch positions. For when `auto-patch.sh` can't. |
 | `INVESTIGATION.md` | Full methodology to rediscover the patch site from scratch against any future version. |
@@ -72,6 +84,8 @@ Verify with `sudo tcpdump -ni any "udp and host <server-ip> and port 3389"` — 
 ## When Microsoft ships an update
 
 Your patch gets overwritten. Re-run `./auto-patch.sh`. If it fails (pattern matcher no longer recognizes the gate), fall through to Ghidra with `find-udp-gate.py` — instructions in `INVESTIGATION.md`.
+
+On 11.4.2+, re-run `./deep-patch.sh` too. Unlike `auto-patch.sh`, its offsets are hardcoded to build 3104, so it aborts rather than mispatch if the bytes at the hook site don't match. A new build needs the code cave, hook site, and stub addresses re-derived.
 
 ## Caveats
 

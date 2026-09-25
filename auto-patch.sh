@@ -104,8 +104,8 @@ patch_arch() {
     # Walk the function body. After each call to IsWvdConnection, capture the first
     # conditional branch within a short window (arm64: cbz w0; x86_64: je after testb).
     # Cap at 500 lines so we stay inside asConnectionSettingsEx.
-    local -a GATES=()
-    local NR=0 WIN=0
+    local -a GATES=() GATE_STATE=()
+    local NR=0 WIN=0 va
     while IFS= read -r line; do
         NR=$((NR + 1)); [ "$NR" -gt 500 ] && break
 
@@ -114,12 +114,15 @@ patch_arch() {
             continue
         fi
         if [ "$WIN" -gt 0 ]; then
+            va=$(echo "$line" | awk '{print $1}')
             if [[ "$ARCH" == arm64* ]] && [[ "$line" =~ cbz[[:space:]]+w0, ]]; then
-                GATES+=("$(echo "$line" | awk '{print $1}')")
-                WIN=0
+                GATES+=("$va"); GATE_STATE+=("branch"); WIN=0
             elif [[ "$ARCH" == x86_64 ]] && [[ "$line" =~ [[:space:]]je[[:space:]]+0x ]]; then
-                GATES+=("$(echo "$line" | awk '{print $1}')")
-                WIN=0
+                GATES+=("$va"); GATE_STATE+=("branch"); WIN=0
+            elif [[ "$line" =~ [[:space:]]nop([[:space:]]|$) ]]; then
+                # A NOP where a gate branch should be = a gate we already patched on a
+                # previous run. Record it so re-runs are idempotent instead of erroring.
+                GATES+=("$va"); GATE_STATE+=("nop"); WIN=0
             else
                 WIN=$((WIN - 1))
             fi
@@ -136,7 +139,13 @@ patch_arch() {
     fi
 
     # Second branch is the UDP gate (first gates the AAD tenant-ID block).
-    local TARGET_VA="${GATES[1]}"
+    local TARGET_VA="${GATES[1]}" TARGET_STATE="${GATE_STATE[1]}"
+    if [ "$TARGET_STATE" = nop ]; then
+        echo "[$ARCH] UDP gate at $TARGET_VA is already a NOP — already patched, nothing to do."
+        PATCHED_ANY=1
+        VERIFY_ARCH+=("$ARCH"); VERIFY_VA+=("$TARGET_VA")
+        return 0
+    fi
     echo "[$ARCH] UDP-gate branch VA: $TARGET_VA"
 
     # Fat-file offset = lipo slice offset + (VA - __TEXT vmaddr for this slice).

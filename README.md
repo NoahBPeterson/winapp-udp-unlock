@@ -8,7 +8,7 @@ This repo removes the gate by NOPing one conditional branch per architecture sli
 
 > **Confirmed working on Windows App 11.3.5, 11.3.6, 11.3.7, 11.3.9, and 11.4.0** with `auto-patch.sh` alone. The pattern-based locator re-patched each Microsoft update with no script changes.
 >
-> **11.4.2 (build 3104) also needs `deep-patch.sh`.** Microsoft rewrote the UDP engine (RdpNano); the gate NOP is now necessary but no longer sufficient. See [11.4.2: the RdpNano side transport](#1142-the-rdpnano-side-transport).
+> **11.4.2 (build 3104) also needs a deep patch, which `auto-patch.sh` now applies automatically.** Microsoft rewrote the UDP engine (RdpNano); the gate NOP is now necessary but no longer sufficient. See [11.4.2: the RdpNano side transport](#1142-the-rdpnano-side-transport).
 >
 > **Apple Silicon and Intel.** Windows App is a universal binary; both scripts patch every slice present (arm64 and x86_64), so the fix works on both. The x86_64 patches were verified by running the patched slice under Rosetta 2 on Apple Silicon.
 
@@ -65,7 +65,7 @@ Grant your terminal **App Management** permission: System Settings → Privacy &
 ```bash
 ./auto-patch.sh
 ```
-On **11.4.2 and later**, also run `./deep-patch.sh` afterward (it needs the gate NOP already in place, plus `pip3 install capstone`). See [11.4.2: the RdpNano side transport](#1142-the-rdpnano-side-transport).
+On **11.4.2 and later**, `auto-patch.sh` detects the RdpNano engine and applies the deep patch in the same run. That step needs `pip3 install capstone`, and the script checks for it before touching anything. See [11.4.2: the RdpNano side transport](#1142-the-rdpnano-side-transport).
 
 **4. Relaunch Windows App and reconnect.** Connection Information → Transport Protocol should read `UDP (Private)`.
 
@@ -76,7 +76,7 @@ Verify with `sudo tcpdump -ni any "udp and host <server-ip> and port 3389"` — 
 | File | Purpose |
 |---|---|
 | `auto-patch.sh` | Patches the installed Windows App — every arch slice present (arm64 + x86_64). Backs up to `/Applications/Windows App.app.bak` first, and refreshes that backup if it's from an older app version (so revert can't downgrade you). Locates the gate by instruction pattern, not hardcoded offset — survives minor recompiles. |
-| `deep-patch.sh` | **11.4.2+ only.** Run after `auto-patch.sh`. Injects the fabricated `SideTransportCreationParams` object that 11.4.2's RdpNano engine requires (see [above](#1142-the-rdpnano-side-transport)). Both slices; re-signs ad-hoc; idempotent and self-healing across re-runs. Like `auto-patch.sh`, it hardcodes no offsets — the cave, hook site, object layout, and call targets are all located in the binary by symbol and pattern, so it survives updates. A thin wrapper over `deep-patch.py` (needs `pip3 install capstone`). |
+| `deep-patch.sh` | **11.4.2+ only; `auto-patch.sh` runs it for you.** Standalone use needs `auto-patch.sh` applied first. Injects the fabricated `SideTransportCreationParams` object that 11.4.2's RdpNano engine requires (see [above](#1142-the-rdpnano-side-transport)). Both slices; re-signs ad-hoc; idempotent and self-healing across re-runs. Like `auto-patch.sh`, it hardcodes no offsets — the cave, hook site, object layout, and call targets are all located in the binary by symbol and pattern, so it survives updates. A thin wrapper over `deep-patch.py` (needs `pip3 install capstone`). |
 | `revert.sh` | Restores the `.bak` whole-bundle backup and verifies the original branch is back on every slice (version/arch-independent). |
 | `find-udp-gate.py` | Ghidra post-script. Locates the gate using only the invariant string `"EnableUdpSideTransport"` — does not depend on mangled C++ symbols or branch positions. For when `auto-patch.sh` can't. |
 | `INVESTIGATION.md` | Full methodology to rediscover the patch site from scratch against any future version. |
@@ -85,7 +85,7 @@ Verify with `sudo tcpdump -ni any "udp and host <server-ip> and port 3389"` — 
 
 Your patch gets overwritten. Re-run `./auto-patch.sh`. If it fails (pattern matcher no longer recognizes the gate), fall through to Ghidra with `find-udp-gate.py` — instructions in `INVESTIGATION.md`.
 
-On 11.4.2+, re-run `./deep-patch.sh` too. Like `auto-patch.sh`, it re-derives everything from the binary — code cave, hook site, object layout, and call targets — so a new build needs no script changes. It reads the pristine `.bak` that `auto-patch.sh` keeps as its reference (so run `auto-patch.sh` first), and aborts rather than mispatch if the structure it expects has changed.
+On 11.4.2+, `auto-patch.sh` re-applies the deep patch too. Like the gate locator, the deep patch re-derives everything from the binary — code cave, hook site, object layout, and call targets — so a new build needs no script changes. It reads the pristine `.bak` that `auto-patch.sh` keeps as its reference, and aborts rather than mispatch if the structure it expects has changed.
 
 ## Caveats
 

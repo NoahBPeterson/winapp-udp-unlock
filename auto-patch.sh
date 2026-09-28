@@ -6,7 +6,11 @@
 #   in EACH architecture slice (arm64 and/or x86_64), locates the 2nd call to
 #   RdCore::RdpConnectionSettings::IsWvdConnection (the gate that suppresses
 #   EnableUdpSideTransport for non-AVD connections), and NOPs the conditional branch that
-#   immediately follows it. Then re-signs ad-hoc.
+#   immediately follows it.
+#
+#   On 11.4.2+ (builds with the RdpNano side transport) it then runs deep-patch.py to inject
+#   the SideTransportCreationParams object that engine requires — detected from the binary,
+#   not the version number. Then re-signs ad-hoc, once, and verifies both patches.
 #
 #   Windows App ships as a universal binary. Apple Silicon Macs run the arm64 slice;
 #   Intel Macs run the x86_64 slice. Both are patched so the fix works on either machine.
@@ -16,14 +20,31 @@
 #   - sudo
 #   - ClientSettings.EnableAvdUdpSideTransport = 1 in com.microsoft.rdc.macos defaults
 #   - Server-side SelectTransport = 0 (and no GPO override)
+#   - 11.4.2+ only: python3 with capstone  (pip3 install capstone)
 
 set -euo pipefail
 
 APP="${1:-/Applications/Windows App.app}"
 BIN="$APP/Contents/MacOS/Windows App"
 BAK="$APP.bak"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 [ -d "$APP" ] || { echo "Not found: $APP" >&2; exit 1; }
+
+# 11.4.2 replaced the UDP engine (RdpNano); its TsUdpTransport::Connect refuses to start without
+# a SideTransportCreationParams object, which deep-patch.py fabricates. Key off the class being
+# present in the binary rather than a version number. Checked up front so a missing dependency
+# aborts before anything is touched. (grep -c, not -q: -q exits early and SIGPIPEs nm under pipefail.)
+NEEDS_DEEP=0
+if [ "$(nm -arch "$(lipo -archs "$BIN" | awk '{print $1}')" "$BIN" 2>/dev/null \
+        | grep -c '__ZTV31SideTransportCreationParamsImpl$' || true)" -gt 0 ]; then
+    NEEDS_DEEP=1
+    echo "==> RdpNano build (11.4.2+): the SideTransportCreationParams deep patch will also be applied."
+    python3 -c 'import capstone' 2>/dev/null || {
+        echo "ERROR: this Windows App build needs the deep patch, which needs capstone:" >&2
+        echo "       pip3 install capstone" >&2
+        exit 1; }
+fi
 
 app_version() {
     /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$1/Contents/Info.plist" 2>/dev/null || echo "?"
@@ -205,6 +226,17 @@ if [ "$PATCHED_ANY" != 1 ]; then
     echo "Nothing patched." >&2; exit 3
 fi
 
+# Deep patch (11.4.2+). Written before the single re-sign below; discovery reads the pristine
+# $BAK refreshed above. Idempotent: an already-installed hook is recognized and rewritten in place.
+# On failure it writes nothing, so we still re-sign (the gate NOPs are already on disk and an
+# unsigned binary won't launch) and report the failure at the end.
+DEEP_FAILED=0
+if [ "$NEEDS_DEEP" = 1 ]; then
+    echo
+    echo "==================== deep patch ===================="
+    python3 "$DIR/deep-patch.py" "$APP" --no-sign || DEEP_FAILED=1
+fi
+
 # ---------------------------------------------------------------------------
 # Re-sign + clear quarantine (once, after all slices patched).
 # ---------------------------------------------------------------------------
@@ -230,4 +262,11 @@ for i in "${!VERIFY_ARCH[@]}"; do
         FAILED=1
     fi
 done
+if [ "$DEEP_FAILED" = 1 ]; then
+    echo "FAIL: deep patch refused (see above); UDP will not work on this build." >&2
+    FAILED=1
+elif [ "$NEEDS_DEEP" = 1 ]; then
+    DEEP_OUT=$(python3 "$DIR/deep-patch.py" "$APP" --verify) || FAILED=1
+    grep -E '^(SUCCESS|FAIL)' <<<"$DEEP_OUT" || { echo "FAIL: deep-patch verification printed nothing" >&2; FAILED=1; }
+fi
 exit $FAILED

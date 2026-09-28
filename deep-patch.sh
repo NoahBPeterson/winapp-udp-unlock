@@ -8,7 +8,8 @@
 # generates the stub per build. This is why it survives Microsoft updates the way auto-patch.sh
 # does — re-run it after any update and it re-derives everything.
 #
-# Requires auto-patch.sh (the gate NOP) applied first. Run as your normal user; the Python
+# auto-patch.sh runs this automatically on 11.4.2+ builds. Standalone, it requires auto-patch.sh
+# (the gate NOP) applied first. Run as your normal user; the Python
 # shells out to sudo only for the two privileged steps (writing the binary, re-signing), so it
 # prompts for your password once. Reversible via revert.sh.
 #

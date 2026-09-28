@@ -21,10 +21,10 @@ Discovery runs against the pristine reference ("<APP>.bak", which auto-patch.sh 
 re-patch never reads its own hook; writes go to the live binary. If no .bak, the live binary is
 used (assumed pristine at the hook site).
 
-Usage:  ./deep-patch.sh [/Applications/Windows App.app] [--dry]
+Usage:  ./deep-patch.sh [/Applications/Windows App.app] [--dry | --verify] [--no-sign]
     or  python3 deep-patch.py [/Applications/Windows App.app] [--dry]
 """
-import subprocess, sys, re, struct, os
+import subprocess, sys, re, struct, os, functools
 import capstone
 from capstone import arm64 as A, x86 as X
 
@@ -47,6 +47,13 @@ def slice_layout(binpath, arch):
     text={'vmaddr':int(m.group(1),16),'off':int(m.group(2)),'size':int(m.group(3))}
     return ao,secs,text
 
+def slice_uuid(binpath, arch):
+    # LC_UUID is set at link time and survives ad-hoc re-signing: same UUID = same build.
+    m=re.search(r'cmd LC_UUID\n.*\n\s+uuid (\S+)',
+                subprocess.run(['otool','-arch',arch,'-l',binpath],capture_output=True,text=True).stdout)
+    return m.group(1) if m else None
+
+@functools.lru_cache(maxsize=None)
 def nm_syms(binpath, arch):
     out=subprocess.run(['nm','-arch',arch,binpath],capture_output=True,text=True).stdout
     d={}
@@ -56,6 +63,11 @@ def nm_syms(binpath, arch):
     return d
 
 # ---------------------------------------------------------------- discovery
+def needs_deep_patch(binpath, arch):
+    # 11.4.2 introduced the RdpNano side transport and, with it, SideTransportCreationParamsImpl.
+    # Builds without it (<= 11.4.0) work with the gate NOP alone.
+    return '__ZTV31SideTransportCreationParamsImpl' in nm_syms(binpath,arch)
+
 def discover(binpath, arch):
     L=slice_layout(binpath,arch)
     if L is None: return None
@@ -77,7 +89,7 @@ def discover(binpath, arch):
     tend=max(s['off']+s['size'] for (seg,_),s in SECS.items() if seg=='__TEXT')
     D['CAVE']=TVM+(tend-TEXT['off'])
     D['slack']=TEXT['off']+TEXT['size']-tend
-    D['cave_is_zero']=all(b==0 for b in data[tend:TEXT['off']+TEXT['size']])
+    D['cave_is_zero']=not any(data[ao+tend:ao+TEXT['off']+TEXT['size']])
     md=capstone.Cs(capstone.CS_ARCH_ARM64 if arch=='arm64' else capstone.CS_ARCH_X86,
                    capstone.CS_MODE_LITTLE_ENDIAN if arch=='arm64' else capstone.CS_MODE_64)
     md.detail=True
@@ -376,37 +388,77 @@ def priv_write(binpath, off, blob):
 def main():
     args=[a for a in sys.argv[1:] if not a.startswith('--')]
     dry='--dry' in sys.argv
+    nosign='--no-sign' in sys.argv      # auto-patch.sh signs once after all writes
+    verify='--verify' in sys.argv       # check the live hook+stub are installed; write nothing
     APP=args[0] if args else '/Applications/Windows App.app'
     BIN=os.path.join(APP,'Contents/MacOS/Windows App')
     BAK=APP+'.bak'; BAKBIN=os.path.join(BAK,'Contents/MacOS/Windows App')
     ref=BAKBIN if os.path.exists(BAKBIN) else BIN
+    refdata=open(ref,'rb').read()
     live=bytearray(open(BIN,'rb').read())
     writes=[]                       # (off, bytes)
+    bad=0
     for arch in ('arm64','x86_64'):
+        if slice_layout(ref,arch) is None: print("[%s] no slice"%arch); continue
+        if not needs_deep_patch(ref,arch):
+            print("[%s] no SideTransportCreationParamsImpl (pre-11.4.2 build); deep patch not needed"%arch); continue
         D=discover(ref,arch)
         if D is None: print("[%s] no slice"%arch); continue
         stub,hook = gen_arm64(D) if arch=='arm64' else gen_x86(D)
-        ao=D['ao']; TVM=D['TVM']
-        cave_fat=ao+(D['CAVE']-TVM); hook_fat=ao+(D['hook']-TVM)
+        # Discovery ran against the pristine reference, but the live binary has been ad-hoc
+        # re-signed, and re-signing a universal Mach-O can move fat-slice file offsets (the
+        # later arm64 slice shifts when the x86_64 signature changes size) while VAs stay put.
+        # So: the REFERENCE layout reads the pristine bytes; the LIVE layout reads/writes the
+        # installed binary. (Found by @thepipespecialist, issue #4.)
+        if not D['cave_is_zero']:
+            print("[%s] reference cave is not zero-filled; refusing to use it"%arch); bad=1; continue
+        ref_uuid=slice_uuid(ref,arch); live_uuid=slice_uuid(BIN,arch)
+        if ref_uuid is None or ref_uuid!=live_uuid:
+            print("[%s] live binary is a different build than the reference (LC_UUID ref=%s live=%s); skipping"%(
+                arch,ref_uuid,live_uuid)); bad=1; continue
+        live_layout=slice_layout(BIN,arch)
+        if live_layout is None: print("[%s] live slice missing; skipping"%arch); bad=1; continue
+        live_ao=live_layout[0]; live_TVM=live_layout[2]['vmaddr']
+        if live_TVM!=D['TVM']:
+            print("[%s] __TEXT vmaddr differs between reference and live binary (ref=0x%x live=0x%x); skipping"%(
+                arch,D['TVM'],live_TVM)); bad=1; continue
+        if live_ao!=D['ao']:
+            print("[%s] fat-slice offset moved after re-sign: ref=%d live=%d; using live offset"%(arch,D['ao'],live_ao))
+        cave_fat=live_ao+(D['CAVE']-live_TVM); hook_fat=live_ao+(D['hook']-live_TVM)
+        ref_hook_fat=D['ao']+(D['hook']-D['TVM'])
         print("[%s] cave=0x%x hook=0x%x stub=%dB  (opnew=0x%x vtbl=0x%x key=0x%x size=0x%x slots %#x/%#x/%#x)"%(
             arch,D['CAVE'],D['hook'],len(stub),D['OPNEW'],D['VTBL'],D['KEY'],D['obj_size'],D['resolve_slot'],D['get_slot'],D['set_slot']))
         if dry: print("   stub",stub.hex()); print("   hook",hook.hex()); continue
-        orig=open(ref,'rb').read()[hook_fat:hook_fat+len(hook)]
         cur=bytes(live[hook_fat:hook_fat+len(hook)])
+        if verify:
+            ok = cur==hook and bytes(live[cave_fat:cave_fat+len(stub)])==stub
+            print("%s [%s]: hook at 0x%x -> stub at 0x%x"%("SUCCESS" if ok else "FAIL",arch,D['hook'],D['CAVE']))
+            bad|=not ok; continue
+        orig=refdata[ref_hook_fat:ref_hook_fat+len(hook)]
         if cur!=orig and cur!=hook:
-            print("[%s] hook site is %s, expected %s or an existing hook; skipping"%(arch,cur.hex(),orig.hex())); continue
+            print("[%s] hook site is %s, expected %s or an existing hook; skipping"%(arch,cur.hex(),orig.hex())); bad=1; continue
+        # The cave must be untouched slack, or already hold our stub (our hook is installed and
+        # branches into it). Anything else means something we don't own lives there.
+        cave_cur=bytes(live[cave_fat:cave_fat+len(stub)+16])
+        if any(cave_cur) and cur!=hook:
+            print("[%s] live cave at 0x%x is not empty and no hook of ours points at it; skipping"%(arch,D['CAVE'])); bad=1; continue
         writes.append((cave_fat, b'\x00'*(len(stub)+16)))   # clear any prior stub
         writes.append((cave_fat, stub))
         writes.append((hook_fat, hook))
         print("[%s] ready"%arch)
-    if dry or not writes:
-        if not dry: print("nothing to do.");
-        return
+    if bad and not (dry or verify):
+        print("refusing to write anything: a slice failed its checks (all slices or none)."); sys.exit(1)
+    if dry or verify or not writes:
+        if not (dry or verify): print("nothing to do.")
+        sys.exit(bad)
     for off,blob in writes: priv_write(BIN, off, blob)
+    if nosign:
+        print("written (not re-signed; caller signs)."); sys.exit(bad)
     r=subprocess.run(PRIV+['codesign','--force','--sign','-',BIN],capture_output=True,text=True)
     if r.returncode!=0: subprocess.run(PRIV+['codesign','--force','--deep','--sign','-',APP])
     subprocess.run(PRIV+['xattr','-r','-d','com.apple.quarantine',APP],capture_output=True)
     print("re-signed. Quit Windows App fully, relaunch, connect.")
+    sys.exit(bad)
 
 if __name__=='__main__':
     main()
